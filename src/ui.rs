@@ -26,11 +26,11 @@ pub fn render(frame: &mut Frame, state: &SwarmState, view: &ViewMode) {
     let chunks = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
     match view {
         ViewMode::List { selected } => {
-            render_header(frame, chunks[0], state.docker_available, false);
+            render_header(frame, chunks[0], state.docker_available, state.docker_ready, false);
             render_lanes(frame, chunks[1], state, *selected);
         }
         ViewMode::Detail { project_path, scroll } => {
-            render_header(frame, chunks[0], state.docker_available, true);
+            render_header(frame, chunks[0], state.docker_available, state.docker_ready, true);
             if let Some(lane) = state.lanes.get(project_path.as_str()) {
                 render_detail_view(frame, chunks[1], lane, *scroll);
             }
@@ -40,11 +40,11 @@ pub fn render(frame: &mut Frame, state: &SwarmState, view: &ViewMode) {
 
 // ── Header ────────────────────────────────────────────────────────────────────
 
-fn render_header(frame: &mut Frame, area: Rect, docker_ok: bool, detail_mode: bool) {
-    let docker_indicator = if docker_ok {
-        Span::styled(" 🐳 docker:ok ", Style::default().fg(Color::Cyan))
-    } else {
-        Span::styled(" 🐳 docker:off ", Style::default().fg(Color::DarkGray))
+fn render_header(frame: &mut Frame, area: Rect, docker_ok: bool, docker_ready: bool, detail_mode: bool) {
+    let docker_indicator = match (docker_ok, docker_ready) {
+        (false, _)    => Span::styled(" 🐳 docker:off ", Style::default().fg(Color::DarkGray)),
+        (true, false) => Span::styled(" 🐳 docker:connecting… ", Style::default().fg(Color::Yellow)),
+        (true, true)  => Span::styled(" 🐳 docker:ok ", Style::default().fg(Color::Cyan)),
     };
     let hints = if detail_mode {
         Span::styled(" ↑↓ scroll  Esc back  q quit ", Style::default().fg(Color::DarkGray))

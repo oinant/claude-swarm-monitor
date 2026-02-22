@@ -229,6 +229,8 @@ pub struct SwarmState {
     pub unmatched_stacks: Vec<DockerStack>,
     /// Docker disponible ?
     pub docker_available: bool,
+    /// Premier snapshot reçu ?
+    pub docker_ready: bool,
 }
 
 impl SwarmState {
@@ -372,6 +374,7 @@ impl SwarmState {
     /// Met à jour toutes les stacks Docker depuis un snapshot complet
     pub fn update_docker_stacks(&mut self, stacks: Vec<DockerStack>) {
         self.docker_available = true;
+        self.docker_ready = true;
 
         // Reset toutes les stacks dans les lanes
         for lane in self.lanes.values_mut() {

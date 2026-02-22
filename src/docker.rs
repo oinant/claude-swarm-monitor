@@ -12,7 +12,7 @@ use bollard::Docker;
 use bollard::container::{ListContainersOptions, StatsOptions};
 use bollard::models::ContainerSummary;
 use bollard::system::EventsOptions;
-use futures_util::StreamExt;
+use futures_util::{StreamExt, future::join_all};
 use std::collections::HashMap;
 use tokio::sync::mpsc;
 use std::time::Instant;
@@ -165,16 +165,24 @@ pub async fn poll_stacks(docker: &Docker) -> Result<Vec<DockerStack>> {
         stacks.entry(project).or_default().push(info);
     }
 
-    // Enrichir avec les stats CPU/RAM (best-effort, on ignore les erreurs)
+    // Enrichir avec les stats CPU/RAM en parallèle (best-effort)
     let mut result = Vec::new();
     for (project_name, mut containers) in stacks {
-        for container in containers.iter_mut() {
-            if container.status.is_active() {
-                if let Ok(stats) = fetch_stats(docker, &container.id).await {
-                    container.cpu_percent = stats.0;
-                    container.mem_mb = stats.1;
-                    container.mem_limit_mb = stats.2;
+        let futs: Vec<_> = containers.iter()
+            .map(|c| {
+                let id = c.id.clone();
+                let active = c.status.is_active();
+                async move {
+                    if active { fetch_stats(docker, &id).await.ok() } else { None }
                 }
+            })
+            .collect();
+        let stats_results = join_all(futs).await;
+        for (container, stats) in containers.iter_mut().zip(stats_results) {
+            if let Some((cpu, mem, mem_limit)) = stats {
+                container.cpu_percent = cpu;
+                container.mem_mb = mem;
+                container.mem_limit_mb = mem_limit;
             }
         }
         // Trier par nom de service
@@ -290,6 +298,6 @@ pub async fn poll_loop(docker: Docker, tx: mpsc::Sender<DockerEvent>) -> Result<
         if let Ok(stacks) = poll_stacks(&docker).await {
             let _ = tx.send(DockerEvent::StacksSnapshot(stacks)).await;
         }
-        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
     }
 }
