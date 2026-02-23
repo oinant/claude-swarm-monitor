@@ -28,6 +28,10 @@ impl App {
                 .map(|p| p.to_string_lossy().into_owned())
                 .unwrap_or_else(|_| ".".to_string())
         });
+        // Canonicalise en chemin absolu (couvre les cas ".", "./foo", chemins relatifs)
+        let lead_path = std::fs::canonicalize(&lead_path)
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or(lead_path);
         Ok(App { state: SwarmState::new(), lead_path, view: ViewMode::List { selected: 0 } })
     }
 

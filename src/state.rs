@@ -297,25 +297,21 @@ impl SwarmState {
     }
 
     fn try_link_by_session_id(&mut self, parent_session_id: &str, child_session_id: &str) -> bool {
-        if let Some(proj) = self.session_index.get(parent_session_id).cloned() {
-            if let Some(lane) = self.lanes.get_mut(&proj) {
-                if let Some(agent) = lane.agents.iter_mut().find(|a| a.session_id == parent_session_id) {
-                    if !agent.sub_agents.iter().any(|s| s.task_tool_use_id == child_session_id) {
-                        agent.role = AgentRole::Lead;
-                        agent.sub_agents.push(SubAgent {
-                            task_tool_use_id: child_session_id.to_string(),
-                            prompt_summary: String::new(),
-                            session_id: Some(child_session_id.to_string()),
-                            status: AgentStatus::Working,
-                            last_tool: None, last_tool_input: None, last_activity: None,
-                        });
-                    }
-                    self.child_index.insert(child_session_id.to_string(), parent_session_id.to_string());
-                    return true;
-                }
-            }
+        let Some(proj) = self.session_index.get(parent_session_id).cloned() else { return false; };
+        let Some(lane) = self.lanes.get_mut(&proj) else { return false; };
+        let Some(agent) = lane.agents.iter_mut().find(|a| a.session_id == parent_session_id) else { return false; };
+        if !agent.sub_agents.iter().any(|s| s.task_tool_use_id == child_session_id) {
+            agent.role = AgentRole::Lead;
+            agent.sub_agents.push(SubAgent {
+                task_tool_use_id: child_session_id.to_string(),
+                prompt_summary: String::new(),
+                session_id: Some(child_session_id.to_string()),
+                status: AgentStatus::Working,
+                last_tool: None, last_tool_input: None, last_activity: None,
+            });
         }
-        false
+        self.child_index.insert(child_session_id.to_string(), parent_session_id.to_string());
+        true
     }
 
     fn try_link(&mut self, parent_tool_use_id: &str, child_session_id: &str) -> bool {
@@ -353,22 +349,16 @@ impl SwarmState {
 
     pub fn apply_event(&mut self, session_id: &str, event: AgentEvent) {
         if let Some(parent_id) = self.child_index.get(session_id).cloned() {
-            if let Some(proj) = self.session_index.get(&parent_id).cloned() {
-                if let Some(lane) = self.lanes.get_mut(&proj) {
-                    if let Some(agent) = lane.agents.iter_mut().find(|a| a.session_id == parent_id) {
-                        agent.apply_event_to_sub(session_id, event);
-                        return;
-                    }
-                }
-            }
+            let Some(proj) = self.session_index.get(&parent_id).cloned() else { return; };
+            let Some(lane) = self.lanes.get_mut(&proj) else { return; };
+            let Some(agent) = lane.agents.iter_mut().find(|a| a.session_id == parent_id) else { return; };
+            agent.apply_event_to_sub(session_id, event);
+            return;
         }
-        if let Some(proj) = self.session_index.get(session_id).cloned() {
-            if let Some(lane) = self.lanes.get_mut(&proj) {
-                if let Some(agent) = lane.agents.iter_mut().find(|a| a.session_id == session_id) {
-                    agent.apply_event(event);
-                }
-            }
-        }
+        let Some(proj) = self.session_index.get(session_id).cloned() else { return; };
+        let Some(lane) = self.lanes.get_mut(&proj) else { return; };
+        let Some(agent) = lane.agents.iter_mut().find(|a| a.session_id == session_id) else { return; };
+        agent.apply_event(event);
     }
 
     /// Met à jour toutes les stacks Docker depuis un snapshot complet
@@ -411,15 +401,12 @@ impl SwarmState {
 
     /// Met à jour le statut d'un container suite à un event Docker temps réel
     pub fn apply_docker_event(&mut self, container_id: &str, new_status: ContainerStatus) {
-        for lane in self.lanes.values_mut() {
-            for stack in lane.docker_stacks.iter_mut() {
-                for container in stack.containers.iter_mut() {
-                    if container.id == container_id {
-                        container.status = new_status;
-                        return;
-                    }
-                }
-            }
+        let container = self.lanes.values_mut()
+            .flat_map(|lane| lane.docker_stacks.iter_mut())
+            .flat_map(|stack| stack.containers.iter_mut())
+            .find(|c| c.id == container_id);
+        if let Some(c) = container {
+            c.status = new_status;
         }
     }
 

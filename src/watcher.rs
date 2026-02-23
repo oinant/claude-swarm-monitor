@@ -79,51 +79,43 @@ struct ScanEntry {
     parent_session_id: Option<String>, // Some(uuid) si depuis uuid/subagents/
 }
 
+async fn scan_main_sessions(project_dir: &Path, project_path: &str) -> Vec<ScanEntry> {
+    let Ok(mut entries) = fs::read_dir(project_dir).await else { return vec![] };
+    let mut result = Vec::new();
+    while let Ok(Some(e)) = entries.next_entry().await {
+        let p = e.path();
+        if p.extension().and_then(|x| x.to_str()) == Some("jsonl") {
+            result.push(ScanEntry { project_path: project_path.to_string(), path: p, parent_session_id: None });
+        }
+    }
+    result
+}
+
+async fn scan_subagent_sessions(project_dir: &Path, project_path: &str) -> Vec<ScanEntry> {
+    let Ok(mut entries) = fs::read_dir(project_dir).await else { return vec![] };
+    let mut result = Vec::new();
+    while let Ok(Some(e)) = entries.next_entry().await {
+        let uuid_dir = e.path();
+        if !uuid_dir.is_dir() { continue; }
+        let Some(uuid) = uuid_dir.file_name().and_then(|n| n.to_str()).map(|s| s.to_string()) else { continue; };
+        let Ok(mut subentries) = fs::read_dir(uuid_dir.join("subagents")).await else { continue; };
+        while let Ok(Some(se)) = subentries.next_entry().await {
+            let p = se.path();
+            if p.extension().and_then(|x| x.to_str()) == Some("jsonl") {
+                result.push(ScanEntry { project_path: project_path.to_string(), path: p, parent_session_id: Some(uuid.clone()) });
+            }
+        }
+    }
+    result
+}
+
 async fn scan_project_dirs(paths: &[String]) -> Vec<ScanEntry> {
     let base = claude_projects_dir();
     let mut result = Vec::new();
     for project_path in paths {
-        let encoded = encode_project_path(project_path);
-        let project_dir = base.join(&encoded);
-
-        // Scan *.jsonl directement dans le project dir (sessions principales)
-        if let Ok(mut entries) = fs::read_dir(&project_dir).await {
-            while let Ok(Some(e)) = entries.next_entry().await {
-                let p = e.path();
-                if p.extension().and_then(|x| x.to_str()) == Some("jsonl") {
-                    result.push(ScanEntry {
-                        project_path: project_path.clone(),
-                        path: p,
-                        parent_session_id: None,
-                    });
-                }
-            }
-        }
-
-        // Scan <uuid>/subagents/*.jsonl
-        if let Ok(mut entries) = fs::read_dir(&project_dir).await {
-            while let Ok(Some(e)) = entries.next_entry().await {
-                let uuid_dir = e.path();
-                if !uuid_dir.is_dir() { continue; }
-                let uuid = match uuid_dir.file_name().and_then(|n| n.to_str()) {
-                    Some(s) => s.to_string(),
-                    None => continue,
-                };
-                let subagents_dir = uuid_dir.join("subagents");
-                if let Ok(mut subentries) = fs::read_dir(&subagents_dir).await {
-                    while let Ok(Some(se)) = subentries.next_entry().await {
-                        let p = se.path();
-                        if p.extension().and_then(|x| x.to_str()) == Some("jsonl") {
-                            result.push(ScanEntry {
-                                project_path: project_path.clone(),
-                                path: p,
-                                parent_session_id: Some(uuid.clone()),
-                            });
-                        }
-                    }
-                }
-            }
-        }
+        let project_dir = base.join(encode_project_path(project_path));
+        result.extend(scan_main_sessions(&project_dir, project_path).await);
+        result.extend(scan_subagent_sessions(&project_dir, project_path).await);
     }
     result
 }
@@ -197,7 +189,22 @@ pub async fn watch_sessions(tx: mpsc::Sender<WatchEvent>, lead_path: String) -> 
             let _ = tx.send(WatchEvent::LanesDiscovered { paths }).await;
         }
 
-        for entry in scan_project_dirs(&all_paths).await {
+        let all_entries = scan_project_dirs(&all_paths).await;
+
+        // Pour chaque project_path, identifier le fichier principal le plus récent.
+        // Ce fichier ne sera jamais skippé (pour toujours montrer au moins le dernier état connu).
+        let mut newest_per_project: HashMap<String, PathBuf> = HashMap::new();
+        for entry in &all_entries {
+            if entry.parent_session_id.is_some() { continue; } // seulement sessions principales
+            let Ok(meta) = tokio::fs::metadata(&entry.path).await else { continue };
+            let Ok(mtime) = meta.modified() else { continue };
+            let cur = newest_per_project.entry(entry.project_path.clone()).or_insert_with(|| entry.path.clone());
+            if let Ok(cur_mtime) = tokio::fs::metadata(&*cur).await.and_then(|m| m.modified()) {
+                if mtime > cur_mtime { *cur = entry.path.clone(); }
+            }
+        }
+
+        for entry in all_entries {
             let ScanEntry { project_path, path: session_file, parent_session_id } = entry;
 
             let offset = offsets.entry(session_file.clone()).or_insert(0);
@@ -206,8 +213,9 @@ pub async fn watch_sessions(tx: mpsc::Sender<WatchEvent>, lead_path: String) -> 
                 .and_then(|s| s.to_str()).unwrap_or("unknown").to_string();
             known.insert(session_file.clone(), session_id.clone());
 
-            // Fichier ancien (>2h sans modification) → skip définitif au démarrage
-            if is_new && !was_modified_recently(&session_file).await {
+            // Fichier ancien (>2h) → skip, SAUF si c'est le plus récent de ce project_path
+            let is_newest = newest_per_project.get(&project_path).map(|p| p == &session_file).unwrap_or(false);
+            if is_new && !is_newest && !was_modified_recently(&session_file).await {
                 if let Ok(meta) = tokio::fs::metadata(&session_file).await {
                     *offset = meta.len(); // fast-forward à la fin
                 }
